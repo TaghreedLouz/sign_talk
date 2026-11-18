@@ -1,0 +1,32 @@
+{
+  "dataset_name": "REPLACE_WITH_DATASET_NAME",
+  "dataset_root": "../data/raw",
+  "annotations_csv": "../data/annotations.csv",
+  "source_url": "REQUIRED",
+  "media_access_method": "REQUIRED",
+  "rights_review": {
+    "status": "pending",
+    "reviewer": "",
+    "review_date": "",
+    "license_identifier": "",
+    "commercial_use_allowed": false,
+    "redistribution_allowed": false,
+    "model_training_allowed": false,
+    "notes": "Do not set status=approved until exact media and annotation rights are reviewed."
+  },
+  "annotation_columns": {
+    "clip_id": "clip_id",
+    "signer_id": "signer_id",
+    "video_path": "video_path",
+    "transcript": "transcript",
+    "gloss_sequence": "gloss_sequence",
+    "split": "split"
+  },
+  "split": {
+    "train": 0.7,
+    "validation": 0.15,
+    "test": 0.15,
+    "seed": 42
+  },
+  "feature_contract": "feature_contract.json"
+}

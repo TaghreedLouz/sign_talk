@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SignTalk continuous ASL annotations",
+  "type": "object",
+  "required": [
+    "clip_id",
+    "signer_id",
+    "video_path",
+    "transcript",
+    "gloss_sequence"
+  ],
+  "properties": {
+    "clip_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "signer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "video_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "transcript": {
+      "type": "string"
+    },
+    "gloss_sequence": {
+      "type": "string"
+    },
+    "split": {
+      "enum": [
+        "",
+        "train",
+        "validation",
+        "test"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

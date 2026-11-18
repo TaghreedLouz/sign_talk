@@ -1,0 +1,10 @@
+{
+  "schema": "signtalk.holistic.2582.v1",
+  "feature_count_per_frame": 2582,
+  "frame_rate_hz": 30,
+  "segment_min_frames": 8,
+  "segment_max_frames": 64,
+  "normalization": "MUST_MATCH_FLUTTER_IMPLEMENTATION",
+  "feature_order_source": "Flutter implementation; do not infer or reorder",
+  "parity_required_before_training": true
+}

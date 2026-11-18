@@ -1,0 +1,26 @@
+{
+  "type": "diagnostic-not-asl",
+  "rigId": "rocketbox-bip01-female-adult-07-v1",
+  "embeddedClip": "QA_FACE_NOT_ASL",
+  "fps": 30,
+  "keyframes": [
+    {
+      "frame": 1,
+      "weight": 0
+    },
+    {
+      "frame": 31,
+      "weight": "peak"
+    },
+    {
+      "frame": 61,
+      "weight": 0
+    }
+  ],
+  "peaks": {
+    "AK_03_BrowInnerUp": 0.5,
+    "AK_09_EyeBlinkLeft": 0.6,
+    "AK_10_EyeBlinkRight": 0.6,
+    "AK_25_JawOpen": 0.2
+  }
+}

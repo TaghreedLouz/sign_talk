@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signtalk.invalid/schemas/en-to-asl-resource-v1.json",
+  "title": "Offline English-to-ASL reviewed resource",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "language", "mode", "status", "entries"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "language": { "const": "ASL" },
+    "mode": { "const": "offline_reviewed_resource_lookup" },
+    "status": { "type": "string", "minLength": 1 },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "originalEnglish", "normalizedEnglish", "translationStatus",
+          "reviewStatus", "translationSource", "review", "aslGloss",
+          "utteranceId", "availableSignIds", "missingSignIds",
+          "nonManualMarkers", "playbackEligible"
+        ],
+        "properties": {
+          "originalEnglish": { "type": "string", "minLength": 1 },
+          "normalizedEnglish": { "type": "string", "minLength": 1 },
+          "translationStatus": { "enum": ["pending_review", "approved"] },
+          "reviewStatus": { "enum": ["pending_review", "approved"] },
+          "translationSource": { "$ref": "#/$defs/sourceOrNull" },
+          "review": { "$ref": "#/$defs/reviewOrNull" },
+          "aslGloss": { "type": ["string", "null"] },
+          "utteranceId": { "type": ["string", "null"] },
+          "availableSignIds": { "type": "array", "items": { "type": "string" } },
+          "missingSignIds": { "type": ["array", "null"], "items": { "type": "string" } },
+          "nonManualMarkers": { "type": ["array", "null"], "items": { "type": "string" } },
+          "playbackEligible": { "type": "boolean" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "translationStatus": { "const": "approved" } } },
+            "then": {
+              "properties": {
+                "reviewStatus": { "const": "approved" },
+                "translationSource": { "type": "object" },
+                "review": { "type": "object" },
+                "aslGloss": { "type": "string", "minLength": 1 },
+                "utteranceId": { "type": "string", "minLength": 1 },
+                "nonManualMarkers": { "type": "array" }
+              }
+            },
+            "else": { "properties": { "playbackEligible": { "const": false } } }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "sourceOrNull": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["license"],
+          "properties": {
+            "title": { "type": "string" },
+            "url": { "type": "string", "format": "uri" },
+            "resourceId": { "type": "string", "minLength": 1 },
+            "license": { "type": "string", "minLength": 1 }
+          },
+          "anyOf": [
+            { "required": ["url"] },
+            { "required": ["resourceId"] }
+          ]
+        }
+      ]
+    },
+    "reviewOrNull": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reviewerRole", "reviewer", "reviewerAffiliation", "reviewedAt", "reviewScope", "evidenceUri"],
+          "properties": {
+            "status": { "const": "approved" },
+            "reviewerRole": { "const": "qualified_asl_reviewer" },
+            "reviewer": { "type": "string", "minLength": 1 },
+            "reviewerAffiliation": { "type": "string", "minLength": 1 },
+            "reviewedAt": { "type": "string", "format": "date" },
+            "reviewScope": { "const": "linguistic_and_motion" },
+            "evidenceUri": { "type": "string", "format": "uri" }
+          }
+        }
+      ]
+    }
+  }
+}

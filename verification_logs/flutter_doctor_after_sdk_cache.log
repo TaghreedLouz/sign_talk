@@ -1,0 +1,38 @@
+[√] Flutter (Channel stable, 3.47.1, on Microsoft Windows [Version 10.0.26200.9974], locale en-US) [924ms]
+    • Flutter version 3.47.1 on channel stable at C:\flutter
+    • Upstream repository https://github.com/flutter/flutter.git
+    • Framework revision 6655482ec0 (3 months ago), 2026-08-19 10:07:23 -0700
+    • Engine revision 5d53178869
+    • Dart version 3.13.1
+    • DevTools version 2.60.0
+    • Feature flags: enable-web, enable-linux-desktop, enable-macos-desktop, enable-windows-desktop, enable-android, enable-ios, cli-animations, enable-native-assets, enable-record-use, enable-swift-package-manager, omit-legacy-version-file, enable-lldb-debugging, enable-uiscene-migration
+
+[√] Windows Version (Windows 11 or higher, 25H2, 2009) [4.2s]
+
+[√] Android toolchain - develop for Android devices (Android SDK version 37.0.0) [6.7s]
+    • Android SDK at C:\Users\H.P\AppData\Local\Android\Sdk
+    • Emulator version 37.2.12.0 (build_id 16428233) (CL:N/A)
+    • Platform android-37.0, build-tools 37.0.0
+    • Java binary at: C:\Program Files\Eclipse Adoptium\jdk-17.0.17.10-hotspot\bin\java
+      This JDK is specified in your Flutter configuration.
+      To change the current JDK, run: `flutter config --jdk-dir="path/to/jdk"`.
+    • Java version OpenJDK Runtime Environment Temurin-17.0.17+10 (build 17.0.17+10)
+    • All Android licenses accepted.
+
+[√] Chrome - develop for the web [48ms]
+    • Chrome at C:\Program Files (x86)\Google\Chrome\Application\chrome.exe
+
+[X] Visual Studio - develop Windows apps [44ms]
+    X Visual Studio not installed; this is necessary to develop Windows apps.
+      Download at https://visualstudio.microsoft.com/downloads/.
+      Please install the "Desktop development with C++" workload, including all of its default components
+
+[√] Connected device (3 available) [1,106ms]
+    • Windows (desktop) • windows • windows-x64    • Microsoft Windows [Version 10.0.26200.9974]
+    • Chrome (web)      • chrome  • web-javascript • Google Chrome 157.0.8103.79
+    • Edge (web)        • edge    • web-javascript • Microsoft Edge 157.0.4341.60
+
+[√] Network resources [2.5s]
+    • All expected network resources are available.
+
+! Doctor found issues in 1 category.

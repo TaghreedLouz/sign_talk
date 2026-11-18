@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "task": "continuous_asl_video_to_english",
+  "signLanguage": "ASL",
+  "recognitionMode": "continuous_sentence_translation",
+  "availability": "unavailable",
+  "modelPath": null,
+  "license": null,
+  "runtime": "unavailable",
+  "offline": false,
+  "confidenceCalibrated": false,
+  "weightsSha256": null,
+  "architecture": null,
+  "trainingDataset": null,
+  "vocabularySize": 0,
+  "input": {
+    "featureSchema": "signtalk.holistic.2582.v1",
+    "featureDimension": 2582,
+    "frames": { "minimum": 8, "maximum": 64 },
+    "framesPerSecond": 30,
+    "channels": [
+      "478 face landmarks x,y,z,visibility",
+      "52 face blendshape coefficients",
+      "33 image pose landmarks x,y,z,visibility",
+      "33 world pose landmarks x,y,z,visibility",
+      "21 left hand image landmarks x,y,z,visibility",
+      "21 left hand world landmarks x,y,z,visibility",
+      "21 right hand image landmarks x,y,z,visibility",
+      "21 right hand world landmarks x,y,z,visibility",
+      "face, pose, left hand, right hand and blendshape presence flags",
+      "left/right wrist directions and palm normals",
+      "temporal hand-motion energy"
+    ]
+  },
+  "confidence": {
+    "minimumToken": 0.7,
+    "minimumSentence": 0.75,
+    "calibration": "required from signer-independent validation; not available"
+  },
+  "sentenceDecoder": {
+    "mode": "exact_reviewed_gloss_sequence",
+    "reviewedMappings": []
+  },
+  "requirements": [
+    "ASL continuous signing (not isolated-sign classification)",
+    "ASL-aware sentence translation or an independently reviewed gloss-to-English decoder",
+    "Genuine video training/evaluation data with signer-independent splits",
+    "Both hands, finger articulation, arms, upper body, face and non-manual features",
+    "Documented identical preprocessing and feature parity with the camera pipeline",
+    "Offline Android inference runtime and redistributable model weights",
+    "Calibrated confidence, blank/unknown outputs and incomplete-segment rejection",
+    "Clear license covering code, checkpoint, training data and app distribution",
+    "Independent held-out ASL video evaluation before enabling transcript output"
+  ],
+  "status": "No suitable licensed continuous ASL-to-English checkpoint and reviewed decoder are installed. Landmark tracking is not translation."
+}

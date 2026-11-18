@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signtalk.invalid/schemas/asl-motion-manifest-v2.json",
+  "title": "SignTalk reviewed ASL motion manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "language", "rigId", "signs", "utterances", "status"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "language": { "const": "ASL" },
+    "rigId": { "const": "rocketbox-bip01-female-adult-07-v1" },
+    "status": { "type": "string", "minLength": 1 },
+    "signs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/sign" },
+      "uniqueItems": true
+    },
+    "utterances": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/utterance" },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["license"],
+      "properties": {
+        "url": { "type": "string", "format": "uri" },
+        "datasetId": { "type": "string", "minLength": 1 },
+        "license": { "type": "string", "minLength": 1 },
+        "referenceId": { "type": "string", "minLength": 1 }
+      },
+      "anyOf": [
+        { "required": ["url"] },
+        { "required": ["datasetId"] }
+      ]
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewerRole", "reviewer", "reviewerAffiliation", "reviewedAt", "reviewScope", "evidenceUri"],
+      "properties": {
+        "status": { "const": "approved" },
+        "reviewerRole": { "const": "qualified_asl_reviewer" },
+        "reviewer": { "type": "string", "minLength": 1 },
+        "reviewerAffiliation": { "type": "string", "minLength": 1 },
+        "reviewedAt": { "type": "string", "format": "date" },
+        "reviewScope": { "const": "linguistic_and_motion" },
+        "evidenceUri": { "type": "string", "format": "uri" }
+      }
+    },
+    "twoHands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left", "right"],
+      "properties": {
+        "left": { "type": "string", "minLength": 1 },
+        "right": { "type": "string", "minLength": 1 }
+      }
+    },
+    "sign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signId", "englishMeaning", "gloss", "rigId", "compatibilityStatus", "source", "review", "animation", "articulation"],
+      "properties": {
+        "signId": { "type": "string", "minLength": 1 },
+        "englishMeaning": { "type": "string", "minLength": 1 },
+        "gloss": { "type": "string", "minLength": 1 },
+        "rigId": { "const": "rocketbox-bip01-female-adult-07-v1" },
+        "compatibilityStatus": { "const": "approved" },
+        "source": { "$ref": "#/$defs/source" },
+        "review": { "$ref": "#/$defs/review" },
+        "animation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["clipId", "durationMs"],
+          "properties": {
+            "clipId": { "type": "string", "minLength": 1, "not": { "pattern": "^QA_" } },
+            "durationMs": { "type": "integer", "minimum": 100, "maximum": 30000 }
+          }
+        },
+        "articulation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["handConfiguration", "palmOrientation", "wristOrientation", "movement", "bodyMovement", "facialExpression", "nonManualMarkers"],
+          "properties": {
+            "handConfiguration": { "$ref": "#/$defs/twoHands" },
+            "palmOrientation": { "$ref": "#/$defs/twoHands" },
+            "wristOrientation": { "$ref": "#/$defs/twoHands" },
+            "movement": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["direction", "trajectory"],
+              "properties": {
+                "direction": { "type": "string", "minLength": 1 },
+                "trajectory": { "type": "string", "minLength": 1 }
+              }
+            },
+            "bodyMovement": { "type": "string", "minLength": 1 },
+            "facialExpression": { "type": "string", "minLength": 1 },
+            "nonManualMarkers": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "utterance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["utteranceId", "language", "aslGloss", "rigId", "compatibilityStatus", "source", "review", "signSequence"],
+      "properties": {
+        "utteranceId": { "type": "string", "minLength": 1 },
+        "language": { "const": "ASL" },
+        "aslGloss": { "type": "string", "minLength": 1 },
+        "rigId": { "const": "rocketbox-bip01-female-adult-07-v1" },
+        "compatibilityStatus": { "const": "approved" },
+        "source": { "$ref": "#/$defs/source" },
+        "review": { "$ref": "#/$defs/review" },
+        "signSequence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["signId", "durationMs", "transitionMs"],
+            "properties": {
+              "signId": { "type": "string", "minLength": 1 },
+              "durationMs": { "type": "integer", "minimum": 100, "maximum": 30000 },
+              "transitionMs": { "type": "integer", "minimum": 0, "maximum": 2000 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,5 @@
+00:00 +0: loading F:/IEEE/SignTalk_working_fixes/sign_talk_two_screens/test/asl_motion_catalog_test.dart
+00:00 +0: F:/IEEE/SignTalk_working_fixes/sign_talk_two_screens/test/asl_motion_catalog_test.dart: empty ASL catalog cannot produce a playback plan
+00:00 +1: F:/IEEE/SignTalk_working_fixes/sign_talk_two_screens/test/asl_motion_catalog_test.dart: rejects the previous unstructured catalog schema
+00:07 +2: F:/IEEE/SignTalk_working_fixes/sign_talk_two_screens/test/widget_test.dart: SignTalk exposes exactly two destinations
+00:10 +3: All tests passed!
