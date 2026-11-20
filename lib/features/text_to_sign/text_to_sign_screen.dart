@@ -93,13 +93,20 @@ class _TextToSignScreenState extends State<TextToSignScreen> {
     );
     final plan = AslSequenceBuilder(catalog)
         .build(result, availableClips: _availableClips.toSet());
+    final playbackBlocker = plan != null
+        ? !_modelReady
+              ? 'لن يبدأ التشغيل حتى يكتمل تحميل الأفاتار.'
+              : _rigAudit?.isStructurallyValid != true
+              ? 'لن يبدأ التشغيل قبل اجتياز فحص هيكل الريغ.'
+              : null
+        : null;
     setState(() {
       _playing = false;
       _activeClip = null;
       _sequence = const [];
       _translationResult = result;
-      if (plan == null) {
-        _status = result.message;
+      if (plan == null || playbackBlocker != null) {
+        _status = playbackBlocker ?? result.message;
         return;
       }
       _sequence = plan.steps;
@@ -163,6 +170,19 @@ class _TextToSignScreenState extends State<TextToSignScreen> {
         _playing = false;
         _status = 'انتهى تشغيل التسلسل. يلزم التحقق البصري المستقل قبل اعتباره متحققًا.';
       }
+    });
+  }
+
+  void _stopPlayback() {
+    if (!mounted) return;
+    setState(() {
+      _playing = false;
+      _sequence = const [];
+      _sequenceIndex = 0;
+      _activeClip = null;
+      _activeDurationMs = null;
+      _activeTransitionMs = 150;
+      _status = 'تم إيقاف التشغيل.';
     });
   }
 
@@ -293,6 +313,8 @@ class _TextToSignScreenState extends State<TextToSignScreen> {
             minLines: 2,
             maxLines: 4,
             textCapitalization: TextCapitalization.sentences,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _playSentence(),
             decoration: const InputDecoration(
               labelText: 'اكتبي الجملة بالإنجليزية',
               hintText: 'For example: Hello, how are you?',
@@ -381,6 +403,12 @@ class _TextToSignScreenState extends State<TextToSignScreen> {
                       })
                     : null,
                 icon: const Icon(Icons.replay),
+              ),
+              const SizedBox(width: 12),
+              IconButton.filledTonal(
+                tooltip: 'إيقاف',
+                onPressed: hasSequence ? _stopPlayback : null,
+                icon: const Icon(Icons.stop),
               ),
             ],
           ),

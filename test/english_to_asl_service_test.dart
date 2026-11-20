@@ -124,6 +124,13 @@ void main() {
       expect(analysis.subjectCandidate, 'you');
       expect(analysis.objectCandidate, 'me');
 
+      const infinitive = 'I want to go home.';
+      final infinitiveAnalysis = parser.analyze(
+        infinitive,
+        normalizer.normalize(infinitive),
+      );
+      expect(infinitiveAnalysis.objectCandidate, isNull);
+
       const negative = 'I do not understand.';
       final negativeAnalysis = parser.analyze(
         negative,

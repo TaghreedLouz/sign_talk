@@ -166,7 +166,7 @@ class EnglishSentenceParser {
     String? objectCandidate;
     for (var index = 1; index < words.length - 1; index++) {
       if (_commonVerbs.contains(words[index]) &&
-          (_pronouns.contains(words[index + 1]) || index + 1 < words.length)) {
+          _pronouns.contains(words[index + 1])) {
         objectCandidate = words[index + 1];
         break;
       }

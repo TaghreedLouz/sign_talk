@@ -101,6 +101,8 @@ class _RealisticAvatarStageState extends State<RealisticAvatarStage> {
   Timer? _loadTimeout;
   int _generation = 0;
   static const _modelPath = 'assets/avatar/female/avatar.glb';
+  String get _viewerModelPath =>
+      kIsWeb ? 'assets/assets/avatar/female/avatar.glb' : _modelPath;
 
   @override
   void initState() {
@@ -129,11 +131,6 @@ class _RealisticAvatarStageState extends State<RealisticAvatarStage> {
       _error = null;
     });
     try {
-      if (kIsWeb) {
-        throw UnsupportedError(
-          'This playback bridge targets Android/iOS. Use preview/index.html to test in a browser.',
-        );
-      }
       final bytes = await rootBundle.load(path);
       if (bytes.lengthInBytes < 20 ||
           bytes.getUint32(0, Endian.little) != 0x46546c67) {
@@ -158,14 +155,16 @@ class _RealisticAvatarStageState extends State<RealisticAvatarStage> {
       widget.onRigAudit?.call(rigAudit);
       widget.onModelReady?.call(false);
       // A broken local WebView/WebGL context otherwise leaves a blank viewer forever.
-      _loadTimeout?.cancel();
-      _loadTimeout = Timer(const Duration(seconds: 90), () {
-        if (!mounted || generation != _generation || _loaded) return;
-        setState(
-          () => _error = 'The avatar did not finish loading. Check WebView/WebGL support and try again.',
-        );
-        widget.onModelReady?.call(false);
-      });
+      if (!kIsWeb) {
+        _loadTimeout?.cancel();
+        _loadTimeout = Timer(const Duration(seconds: 90), () {
+          if (!mounted || generation != _generation || _loaded) return;
+          setState(
+            () => _error = 'The avatar did not finish loading. Check WebView/WebGL support and try again.',
+          );
+          widget.onModelReady?.call(false);
+        });
+      }
     } catch (error) {
       if (!mounted || generation != _generation) return;
       setState(() {
@@ -444,7 +443,7 @@ class _RealisticAvatarStageState extends State<RealisticAvatarStage> {
         children: [
           ModelViewer(
             key: ValueKey(_modelPath),
-            src: _modelPath,
+            src: _viewerModelPath,
             alt: 'Female avatar evaluation candidate. Visual and ASL acceptance pending.',
             backgroundColor: const Color(0xFFE8EDF2),
             cameraControls: true,
@@ -468,7 +467,7 @@ class _RealisticAvatarStageState extends State<RealisticAvatarStage> {
               if (generation == _generation) _controller = controller;
             },
           ),
-          if (!_loaded)
+          if (!_loaded && !kIsWeb)
             IgnorePointer(
               child: ColoredBox(
                 color: const Color(0x99E8EDF2),

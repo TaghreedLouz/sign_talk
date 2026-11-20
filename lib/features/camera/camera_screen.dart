@@ -2,13 +2,16 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mediapipe_vision/mediapipe_vision.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:video_player/video_player.dart';
 
 import '../../core/constants/app_constants.dart';
 import 'asl_recognition_pipeline.dart';
+import 'video_frame_processor.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -19,10 +22,14 @@ class CameraScreen extends StatefulWidget {
 
 class _CameraScreenState extends State<CameraScreen> {
   CameraController? _camera;
+  List<CameraDescription> _cameras = const [];
+  int _cameraIndex = 0;
   HolisticLandmarker? _landmarker;
+  HolisticLandmarker? _videoLandmarker;
   StreamSubscription<HolisticLandmarkerResult>? _resultSubscription;
   final Stopwatch _clock = Stopwatch();
   AslRecognitionPipeline? _recognitionPipeline;
+  Future<void> _recognitionQueue = Future<void>.value();
 
   bool _loading = true;
   final bool _processingEnabled = true;
@@ -38,12 +45,22 @@ class _CameraScreenState extends State<CameraScreen> {
   int _leftCount = 0;
   int _rightCount = 0;
   int _faceBlendshapeCount = 0;
+  int _droppedFrames = 0;
   int _lastTimestamp = -1;
+  bool _cameraSwitching = false;
+  bool _showLandmarks = true;
+  bool _transcriptCleared = false;
+  bool _isVideoProcessing = false;
+  bool _cancelVideo = false;
+  int _videoFramesProcessed = 0;
+  int _videoFramesTotal = 0;
+  String? _videoMessage;
   bool _captureParity = false;
   final List<Map<String, Object?>> _parityFrames = [];
   List<Offset> _leftHand = const [];
   List<Offset> _rightHand = const [];
   List<Offset> _pose = const [];
+  List<Offset> _face = const [];
 
   @override
   void initState() {
@@ -52,15 +69,22 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _initialize() async {
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+        _cameraSwitching = false;
+      });
+    }
     try {
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) {
+      _cameras = await availableCameras();
+      if (_cameras.isEmpty) {
         throw CameraException('NoCamera', 'No camera found.');
       }
-      final selected = cameras.firstWhere(
+      _cameraIndex = _cameras.indexWhere(
         (c) => c.lensDirection == CameraLensDirection.front,
-        orElse: () => cameras.first,
       );
+      if (_cameraIndex < 0) _cameraIndex = 0;
 
       _landmarker = await HolisticLandmarker.create(
         HolisticLandmarkerOptions(
@@ -75,30 +99,16 @@ class _CameraScreenState extends State<CameraScreen> {
       _resultSubscription = _landmarker!.results.listen(
         _onLandmarks,
         onError: (Object error) {
-          if (mounted) setState(() => _status = 'Tracking error: $error');
+          if (mounted) {
+            setState(
+              () => _status = 'MediaPipe stopped after an error: $error',
+            );
+          }
         },
       );
 
-      final controller = CameraController(
-        selected,
-        ResolutionPreset.medium,
-        enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.yuv420,
-      );
-      await controller.initialize();
-      if (!mounted) {
-        await controller.dispose();
-        return;
-      }
-      _camera = controller;
       _clock.start();
-      await controller.startImageStream(_processFrame);
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _status =
-            'Camera active. Keep your face, upper body and both hands visible.';
-      });
+      await _startCamera(_cameras[_cameraIndex]);
     } catch (error) {
       await _disposeResources();
       if (!mounted) return;
@@ -107,6 +117,62 @@ class _CameraScreenState extends State<CameraScreen> {
         _error = error.toString();
         _status = 'Could not initialize camera tracking.';
       });
+    }
+  }
+
+  Future<void> _startCamera(CameraDescription description) async {
+    final controller = CameraController(
+      description,
+      ResolutionPreset.medium,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.yuv420,
+    );
+    try {
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      _camera = controller;
+      await controller.startImageStream(_processFrame);
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _cameraSwitching = false;
+        _error = null;
+        _status =
+            'Camera active. Keep your face, upper body and both hands visible.';
+      });
+    } catch (_) {
+      if (identical(_camera, controller)) _camera = null;
+      await controller.dispose();
+      rethrow;
+    }
+  }
+
+  Future<void> _switchCamera() async {
+    if (_cameraSwitching || _isVideoProcessing || _cameras.length < 2) return;
+    setState(() {
+      _cameraSwitching = true;
+      _status = 'Switching camera…';
+    });
+    _cameraIndex = (_cameraIndex + 1) % _cameras.length;
+    try {
+      final current = _camera;
+      _camera = null;
+      if (current != null) {
+        if (current.value.isStreamingImages) await current.stopImageStream();
+        await current.dispose();
+      }
+      await _startCamera(_cameras[_cameraIndex]);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _cameraSwitching = false;
+          _error = error.toString();
+          _status = 'Could not switch camera.';
+        });
+      }
     }
   }
 
@@ -129,7 +195,9 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void _processFrame(CameraImage image) {
     final task = _landmarker;
-    if (task == null || !_processingEnabled || !mounted) return;
+    if (task == null || !_processingEnabled || !mounted || _isVideoProcessing) {
+      return;
+    }
     try {
       final rgba = CameraFramePreprocessor.fromCameraImage(image);
       final now = _clock.elapsedMilliseconds;
@@ -176,9 +244,12 @@ class _CameraScreenState extends State<CameraScreen> {
     final pose = result.poseLandmarks
         .map((p) => Offset(p.x.toDouble(), p.y.toDouble()))
         .toList(growable: false);
+    final face = result.faceLandmarks
+        .map((p) => Offset(p.x.toDouble(), p.y.toDouble()))
+        .toList(growable: false);
     setState(() {
       _frames++;
-      _faceCount = result.faceLandmarks.length;
+      _faceCount = face.length;
       _faceBlendshapeCount = result.faceBlendshapes?.length ?? 0;
       _poseCount = pose.length;
       _leftCount = left.length;
@@ -186,16 +257,31 @@ class _CameraScreenState extends State<CameraScreen> {
       _leftHand = left;
       _rightHand = right;
       _pose = pose;
+      _face = face;
+      _droppedFrames = _landmarker?.droppedFrames ?? 0;
       _status = left.isNotEmpty || right.isNotEmpty
-          ? 'Hands detected. Keep signing inside the frame.'
-          : 'Show both hands clearly inside the camera frame.';
+          ? 'MediaPipe sees the hands. Continue signing inside the frame.'
+          : pose.isNotEmpty || face.isNotEmpty
+          ? 'MediaPipe sees the face/body. Show both hands clearly in frame.'
+          : 'MediaPipe is receiving frames; keep face, upper body and hands visible.';
     });
-    unawaited(
-      _processRecognitionResult(
-        result,
-        result.timestampMilliseconds ?? _clock.elapsedMilliseconds,
-      ),
+    _enqueueRecognitionResult(
+      result,
+      result.timestampMilliseconds ?? _clock.elapsedMilliseconds,
     );
+  }
+
+  void _enqueueRecognitionResult(
+    HolisticLandmarkerResult result,
+    int timestamp,
+  ) {
+    _recognitionQueue = _recognitionQueue
+        .then((_) => _processRecognitionResult(result, timestamp))
+        .catchError((Object error) {
+          if (mounted) {
+            setState(() => _status = 'Recognition pipeline error: $error');
+          }
+        });
   }
 
   Future<void> _saveParityCapture() async {
@@ -225,6 +311,10 @@ class _CameraScreenState extends State<CameraScreen> {
     final pipeline = _recognitionPipeline;
     if (pipeline == null) return;
     final decoded = await pipeline.addLandmarks(result, timestampMs: timestamp);
+    _applyDecodeResult(decoded);
+  }
+
+  void _applyDecodeResult(AslEnglishDecodeResult decoded) {
     if (!mounted) return;
     setState(() {
       _translationState = switch (decoded.status) {
@@ -236,7 +326,12 @@ class _CameraScreenState extends State<CameraScreen> {
         AslDecodeStatus.unknownGloss => 'UNKNOWN SIGN',
         AslDecodeStatus.unsupportedSequence => 'UNSUPPORTED SEQUENCE',
       };
-      _transcript = decoded.englishSentence ?? decoded.message;
+      if (decoded.englishSentence != null) {
+        _transcript = decoded.englishSentence!;
+        _transcriptCleared = false;
+      } else if (!_transcriptCleared) {
+        _transcript = decoded.message;
+      }
       _recognizedGlosses = decoded.predictedGlosses.isEmpty
           ? null
           : decoded.predictedGlosses.join(' ');
@@ -244,7 +339,186 @@ class _CameraScreenState extends State<CameraScreen> {
     });
   }
 
+  Future<void> _pickAndAnalyzeVideo() async {
+    if (_isVideoProcessing || _loading || _camera == null) return;
+    try {
+      final selected = await FilePicker.pickFile(type: FileType.video);
+      if (selected == null) return;
+      final path = selected.path;
+      if (path == null || path.isEmpty) {
+        throw StateError(
+          'The selected video is not available as a local file.',
+        );
+      }
+
+      final videoController = VideoPlayerController.file(File(path));
+      late final int durationMs;
+      try {
+        await videoController.initialize();
+        durationMs = videoController.value.duration.inMilliseconds;
+      } finally {
+        await videoController.dispose();
+      }
+      if (durationMs <= 0) {
+        throw StateError('The selected video has no readable duration.');
+      }
+
+      final liveCamera = _camera;
+      if (liveCamera?.value.isStreamingImages == true) {
+        await liveCamera!.stopImageStream();
+      }
+      if (!mounted) return;
+      setState(() {
+        _isVideoProcessing = true;
+        _cancelVideo = false;
+        _videoFramesProcessed = 0;
+        _videoFramesTotal = VideoFrameProcessor.timestampsForDuration(
+          durationMs,
+        ).length;
+        _videoMessage = 'Preparing offline MediaPipe video analysis…';
+        _status = 'Analyzing ${selected.name} at timestamped video frames.';
+      });
+
+      final videoLandmarker = await HolisticLandmarker.create(
+        HolisticLandmarkerOptions(
+          model: VisionModels.holisticLandmarker,
+          runningMode: RunningMode.video,
+          outputFaceBlendshapes: true,
+        ),
+      );
+      _videoLandmarker = videoLandmarker;
+      final videoPipeline = await _loadRecognitionPipeline();
+      final processor = VideoFrameProcessor();
+      final summary = await processor.process(
+        path: path,
+        durationMs: durationMs,
+        isCancelled: () => _cancelVideo || !mounted,
+        onProgress: (processed, total) {
+          if (!mounted) return;
+          setState(() {
+            _videoFramesProcessed = processed;
+            _videoFramesTotal = total;
+            _videoMessage =
+                'Extracted and analyzed $processed of $total frames.';
+          });
+        },
+        onFrame: (timestampMs, frame) async {
+          if (_cancelVideo || !mounted) return;
+          final result = await videoLandmarker.detectForVideo(
+            VisionImage.fromPixels(
+              pixels: frame.pixels,
+              width: frame.width,
+              height: frame.height,
+              format: VisionPixelFormat.rgba,
+            ),
+            timestampMilliseconds: timestampMs,
+          );
+          if (!mounted) return;
+          _updateTrackingFromResult(result, isVideo: true);
+          final decoded = await videoPipeline.addLandmarks(
+            result,
+            timestampMs: timestampMs,
+          );
+          _applyDecodeResult(decoded);
+        },
+      );
+      if (mounted) {
+        setState(() {
+          _videoFramesProcessed = summary.processedFrames;
+          _videoMessage = summary.cancelled
+              ? 'Video analysis stopped. No English sentence was produced.'
+              : 'Processed ${summary.processedFrames} video frames. '
+                    'English translation is unavailable because no ASL model is installed.';
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _videoMessage = 'Video analysis failed: $error';
+          _status = 'Could not analyze the selected video.';
+        });
+      }
+    } finally {
+      final videoLandmarker = _videoLandmarker;
+      _videoLandmarker = null;
+      if (videoLandmarker != null) await videoLandmarker.dispose();
+      final liveCamera = _camera;
+      if (mounted &&
+          liveCamera != null &&
+          liveCamera.value.isInitialized &&
+          !liveCamera.value.isStreamingImages) {
+        try {
+          await liveCamera.startImageStream(_processFrame);
+        } catch (error) {
+          if (mounted) setState(() => _status = 'Camera resume failed: $error');
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _isVideoProcessing = false;
+          _cancelVideo = false;
+        });
+      }
+    }
+  }
+
+  void _updateTrackingFromResult(
+    HolisticLandmarkerResult result, {
+    bool isVideo = false,
+  }) {
+    final left = result.leftHandLandmarks
+        .map((point) => Offset(point.x.toDouble(), point.y.toDouble()))
+        .toList(growable: false);
+    final right = result.rightHandLandmarks
+        .map((point) => Offset(point.x.toDouble(), point.y.toDouble()))
+        .toList(growable: false);
+    final pose = result.poseLandmarks
+        .map((point) => Offset(point.x.toDouble(), point.y.toDouble()))
+        .toList(growable: false);
+    final face = result.faceLandmarks
+        .map((point) => Offset(point.x.toDouble(), point.y.toDouble()))
+        .toList(growable: false);
+    if (!mounted) return;
+    setState(() {
+      _frames++;
+      _faceCount = face.length;
+      _faceBlendshapeCount = result.faceBlendshapes?.length ?? 0;
+      _poseCount = pose.length;
+      _leftCount = left.length;
+      _rightCount = right.length;
+      _leftHand = left;
+      _rightHand = right;
+      _pose = pose;
+      _face = face;
+      _droppedFrames = isVideo ? 0 : (_landmarker?.droppedFrames ?? 0);
+      if (isVideo) {
+        _status = 'MediaPipe analyzed timestamped video frames.';
+      }
+    });
+  }
+
+  void _clearTranscript() {
+    setState(() {
+      _transcriptCleared = true;
+      _transcript = '';
+      _recognizedGlosses = null;
+      _recognitionConfidence = null;
+      _translationState =
+          _recognitionPipeline?.model.manifest.availability ==
+              AslModelAvailability.ready
+          ? 'CLEARED'
+          : 'MODEL UNAVAILABLE';
+    });
+  }
+
+  void _cancelVideoAnalysis() {
+    if (!_isVideoProcessing) return;
+    setState(() => _videoMessage = 'Stopping after the current frame…');
+    _cancelVideo = true;
+  }
+
   Future<void> _disposeResources() async {
+    _cancelVideo = true;
     final camera = _camera;
     _camera = null;
     if (camera != null) {
@@ -271,17 +545,38 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   Widget build(BuildContext context) {
     final camera = _camera;
+    final portrait = MediaQuery.orientationOf(context) == Orientation.portrait;
+    final previewAspect = camera == null
+        ? 1.0
+        : portrait
+        ? 1 / camera.value.aspectRatio
+        : camera.value.aspectRatio;
     return Scaffold(
       appBar: AppBar(title: const Text('Sign to Text')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : _error != null
+          : _cameraSwitching
+          ? const Center(child: CircularProgressIndicator())
+          : camera == null || _error != null
           ? Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
-                child: Text(
-                  'Could not start camera tracking:\n$_error',
-                  textAlign: TextAlign.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.videocam_off_outlined, size: 40),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Could not start camera tracking:\n${_error ?? 'Camera unavailable.'}',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton.icon(
+                      onPressed: _initialize,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry camera'),
+                    ),
+                  ],
                 ),
               ),
             )
@@ -291,25 +586,29 @@ class _CameraScreenState extends State<CameraScreen> {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(24),
                   child: AspectRatio(
-                    aspectRatio: camera!.value.aspectRatio,
+                    aspectRatio: previewAspect,
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
                         CameraPreview(camera),
-                        IgnorePointer(
-                          child: CustomPaint(
-                            painter: _LandmarkPainter(
-                              leftHand: _leftHand,
-                              rightHand: _rightHand,
-                              pose: _pose,
+                        if (_showLandmarks)
+                          IgnorePointer(
+                            child: CustomPaint(
+                              painter: _LandmarkPainter(
+                                leftHand: _leftHand,
+                                rightHand: _rightHand,
+                                pose: _pose,
+                                face: _face,
+                              ),
                             ),
                           ),
-                        ),
                         Positioned(
                           top: 12,
                           left: 12,
                           child: _StatusPill(
-                            label: 'LIVE CAMERA',
+                            label: _isVideoProcessing
+                                ? 'VIDEO ANALYSIS'
+                                : 'LIVE · ${camera.description.lensDirection.name.toUpperCase()}',
                             color: Colors.black.withValues(alpha: .65),
                           ),
                         ),
@@ -317,22 +616,105 @@ class _CameraScreenState extends State<CameraScreen> {
                           top: 12,
                           right: 12,
                           child: _StatusPill(
-                            label: '$_frames frames',
+                            label: '$_frames frames · $_droppedFrames dropped',
                             color: Colors.black.withValues(alpha: .65),
+                          ),
+                        ),
+                        if (_cameraSwitching)
+                          const Center(child: CircularProgressIndicator()),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _isVideoProcessing
+                          ? null
+                          : _pickAndAnalyzeVideo,
+                      icon: const Icon(Icons.video_file_outlined),
+                      label: const Text('Analyze video'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _cameras.length > 1 && !_isVideoProcessing
+                          ? _switchCamera
+                          : null,
+                      icon: const Icon(Icons.cameraswitch_outlined),
+                      label: const Text('Switch camera'),
+                    ),
+                    TextButton.icon(
+                      onPressed: () =>
+                          setState(() => _showLandmarks = !_showLandmarks),
+                      icon: Icon(
+                        _showLandmarks
+                            ? Icons.visibility_outlined
+                            : Icons.visibility_off_outlined,
+                      ),
+                      label: Text(
+                        _showLandmarks ? 'Hide points' : 'Show points',
+                      ),
+                    ),
+                  ],
+                ),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _error == null
+                              ? Icons.track_changes
+                              : Icons.error_outline,
+                          color: _error == null
+                              ? AppConstants.secondary
+                              : Colors.red,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _status,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
                           ),
                         ),
                       ],
                     ),
                   ),
                 ),
-                const SizedBox(height: 14),
-                Text(
-                  _status,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
+                if (_isVideoProcessing) ...[
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(
+                    value: _videoFramesTotal == 0
+                        ? null
+                        : (_videoFramesProcessed / _videoFramesTotal)
+                              .clamp(0, 1)
+                              .toDouble(),
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(_videoMessage ?? 'Analyzing video…'),
+                      ),
+                      TextButton.icon(
+                        onPressed: _cancelVideoAnalysis,
+                        icon: const Icon(Icons.stop_circle_outlined),
+                        label: const Text('Cancel'),
+                      ),
+                    ],
+                  ),
+                ] else if (_videoMessage != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_videoMessage!, style: const TextStyle(fontSize: 12)),
+                ],
                 if (kDebugMode)
                   TextButton.icon(
-                    onPressed: _captureParity
+                    onPressed: _isVideoProcessing
+                        ? null
+                        : _captureParity
                         ? _saveParityCapture
                         : () => setState(() {
                             _parityFrames.clear();
@@ -352,6 +734,7 @@ class _CameraScreenState extends State<CameraScreen> {
                 _TranscriptPanel(
                   transcript: _transcript,
                   state: _translationState,
+                  onClear: _clearTranscript,
                 ),
                 const SizedBox(height: 14),
                 const Text(
@@ -371,6 +754,7 @@ class _CameraScreenState extends State<CameraScreen> {
                       label: 'Face blendshapes',
                       count: _faceBlendshapeCount,
                     ),
+                    _CountChip(label: 'Dropped frames', count: _droppedFrames),
                   ],
                 ),
                 if (_recognizedGlosses != null ||
@@ -405,9 +789,14 @@ class _CameraScreenState extends State<CameraScreen> {
 }
 
 class _TranscriptPanel extends StatelessWidget {
-  const _TranscriptPanel({required this.transcript, required this.state});
+  const _TranscriptPanel({
+    required this.transcript,
+    required this.state,
+    required this.onClear,
+  });
   final String transcript;
   final String state;
+  final VoidCallback onClear;
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(18),
@@ -427,6 +816,11 @@ class _TranscriptPanel extends StatelessWidget {
                 style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
               ),
             ),
+            IconButton(
+              tooltip: 'Clear transcript',
+              onPressed: transcript.isEmpty ? null : onClear,
+              icon: const Icon(Icons.clear_all),
+            ),
             _StatusPill(
               label: state,
               color: const Color(0xFFEAF2FF),
@@ -436,7 +830,7 @@ class _TranscriptPanel extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Text(
-          transcript,
+          transcript.isEmpty ? 'No transcript.' : transcript,
           style: const TextStyle(
             fontSize: 15,
             height: 1.4,
@@ -445,7 +839,7 @@ class _TranscriptPanel extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         const Text(
-          'Uncertain words will be marked when the ASL translation model is connected.',
+          'English output appears only after a compatible ASL recognition model and reviewed sentence decoder are installed.',
           style: TextStyle(fontSize: 11, color: AppConstants.muted),
         ),
       ],
@@ -502,10 +896,28 @@ class _LandmarkPainter extends CustomPainter {
     required this.leftHand,
     required this.rightHand,
     required this.pose,
+    required this.face,
   });
   final List<Offset> leftHand;
   final List<Offset> rightHand;
   final List<Offset> pose;
+  final List<Offset> face;
+  static const List<List<int>> _poseConnections = [
+    [11, 12],
+    [11, 13],
+    [13, 15],
+    [12, 14],
+    [14, 16],
+    [11, 23],
+    [12, 24],
+    [23, 24],
+    [23, 25],
+    [25, 27],
+    [24, 26],
+    [26, 28],
+    [15, 17],
+    [16, 18],
+  ];
   static const List<List<int>> _connections = [
     [0, 1],
     [1, 2],
@@ -531,16 +943,25 @@ class _LandmarkPainter extends CustomPainter {
   ];
   @override
   void paint(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.clipRect(Offset.zero & size);
     _drawHand(canvas, size, leftHand, Colors.cyanAccent);
     _drawHand(canvas, size, rightHand, Colors.orangeAccent);
-    final paint = Paint()..color = Colors.white;
-    for (final point in pose) {
-      canvas.drawCircle(
-        Offset(point.dx * size.width, point.dy * size.height),
-        2.2,
-        paint,
-      );
+    final poseLine = Paint()
+      ..color = Colors.white.withValues(alpha: .72)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    for (final edge in _poseConnections) {
+      if (edge[0] >= pose.length || edge[1] >= pose.length) continue;
+      final first = _scaled(pose[edge[0]], size);
+      final second = _scaled(pose[edge[1]], size);
+      if (first != null && second != null) {
+        canvas.drawLine(first, second, poseLine);
+      }
     }
+    _drawPoints(canvas, size, pose, Colors.white, radius: 2.2);
+    _drawPoints(canvas, size, face, Colors.lightGreenAccent, radius: .8);
+    canvas.restore();
   }
 
   void _drawHand(Canvas canvas, Size size, List<Offset> points, Color color) {
@@ -554,26 +975,46 @@ class _LandmarkPainter extends CustomPainter {
       if (edge[0] >= points.length || edge[1] >= points.length) {
         continue;
       }
-      canvas.drawLine(
-        Offset(
-          points[edge[0]].dx * size.width,
-          points[edge[0]].dy * size.height,
-        ),
-        Offset(
-          points[edge[1]].dx * size.width,
-          points[edge[1]].dy * size.height,
-        ),
-        line,
-      );
+      final first = _scaled(points[edge[0]], size);
+      final second = _scaled(points[edge[1]], size);
+      if (first != null && second != null) canvas.drawLine(first, second, line);
     }
     for (final p in points) {
-      canvas.drawCircle(Offset(p.dx * size.width, p.dy * size.height), 3, dot);
+      final scaled = _scaled(p, size);
+      if (scaled != null) canvas.drawCircle(scaled, 3, dot);
     }
+  }
+
+  void _drawPoints(
+    Canvas canvas,
+    Size size,
+    List<Offset> points,
+    Color color, {
+    required double radius,
+  }) {
+    final paint = Paint()..color = color;
+    for (final point in points) {
+      final scaled = _scaled(point, size);
+      if (scaled != null) canvas.drawCircle(scaled, radius, paint);
+    }
+  }
+
+  Offset? _scaled(Offset point, Size size) {
+    if (!point.dx.isFinite ||
+        !point.dy.isFinite ||
+        point.dx < 0 ||
+        point.dx > 1 ||
+        point.dy < 0 ||
+        point.dy > 1) {
+      return null;
+    }
+    return Offset(point.dx * size.width, point.dy * size.height);
   }
 
   @override
   bool shouldRepaint(covariant _LandmarkPainter old) =>
       old.leftHand != leftHand ||
       old.rightHand != rightHand ||
-      old.pose != pose;
+      old.pose != pose ||
+      old.face != face;
 }
