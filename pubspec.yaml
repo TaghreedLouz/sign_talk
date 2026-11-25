@@ -49,3 +49,7 @@ hooks:
     mediapipe_vision:
       tasks: [holistic_landmarker]
       models: [holistic_landmarker]
+
+dependency_overrides:
+  video_thumbnail:
+    path: third_party/video_thumbnail

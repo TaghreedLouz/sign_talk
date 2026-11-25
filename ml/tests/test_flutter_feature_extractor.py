@@ -13,8 +13,9 @@ def raw():
     return dict(featureSchema=SCHEMA,timestampMs=0,faceLandmarks=[point(visibility=1)]*478,
       faceBlendshapes=[dict(name="jawOpen",score=.75),dict(name="browDownLeft",score=.25)],
       poseImageLandmarks=[point(visibility=1)]*33,poseWorldLandmarks=[point(presence=1)]*33,
-      leftHandImageLandmarks=hand,leftHandWorldLandmarks=hand,rightHandImageLandmarks=hand,
-      rightHandWorldLandmarks=hand,previous=None)
+      leftHandImageLandmarks=[dict(p) for p in hand],leftHandWorldLandmarks=[dict(p) for p in hand],
+      rightHandImageLandmarks=[dict(p) for p in hand],
+      rightHandWorldLandmarks=[dict(p) for p in hand],previous=None)
 
 class FeatureTests(unittest.TestCase):
     def test_full_width_blendshape_names_and_offsets(self):
@@ -28,6 +29,33 @@ class FeatureTests(unittest.TestCase):
     def test_nonfinite_is_sanitized(self):
         x=raw(); x['faceLandmarks'][0]=point(float('nan'),float('inf'),-float('inf'),float('nan'))
         f=extract(x); self.assertEqual(f[:4],[0.]*4); self.assertTrue(all(math.isfinite(v) for v in f))
+
+    def test_large_invalid_scalar_is_sanitized(self):
+        x=raw(); x['faceLandmarks'][0]=point(10**10000,0,0,1)
+        f=extract(x); self.assertEqual(f[0],0.); self.assertTrue(all(math.isfinite(v) for v in f))
+
+    def test_left_right_and_both_hand_order_and_presence(self):
+        x=raw()
+        x['leftHandImageLandmarks'][0]=point(.11,.12,.13,1)
+        x['rightHandImageLandmarks'][0]=point(.71,.72,.73,1)
+        f=extract(x)
+        self.assertEqual(f[2228:2232],[.11,.12,.13,1.])
+        self.assertEqual(f[2396:2400],[.71,.72,.73,1.])
+        self.assertEqual(f[2566:2568],[1.,1.])
+        x['leftHandImageLandmarks']=[]; x['leftHandWorldLandmarks']=[]
+        f=extract(x)
+        self.assertEqual(f[2228:2312],[0.]*84)
+        self.assertEqual(f[2566:2568],[0.,1.])
+        self.assertEqual(f[2569:2575],[0.]*6)
+        x['leftHandImageLandmarks']=[point(i/20,(i%5)/10,(i%3)/10,1) for i in range(21)]
+        f=extract(x)
+        self.assertEqual(f[2566:2568],[1.,1.])
+
+    def test_absent_face_pose_and_null_blendshape_list(self):
+        x=raw(); x.update(faceLandmarks=[],poseImageLandmarks=[],poseWorldLandmarks=[],faceBlendshapes=None)
+        f=extract(x)
+        self.assertEqual(f[:1964],[0.]*1964)
+        self.assertEqual(f[2564:2569],[0.,0.,1.,1.,0.])
     def test_motion_and_frame_gap_inputs(self):
         x=raw(); x['previous']={'timestampMs':0,'leftHandVisible':True,'rightHandVisible':False,'leftHandCoordinates':[0.]*63,'rightHandCoordinates':[]}
         f=extract(x); expected=sum(math.sqrt(sum((a-b)**2 for a,b in zip(fcur,fprev))) for fcur,fprev in zip([[(p['x'],p['y'],p['z']) for p in x['leftHandImageLandmarks']][i] for i in range(21)],[(0,0,0)]*21))/21

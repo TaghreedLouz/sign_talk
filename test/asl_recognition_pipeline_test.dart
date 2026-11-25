@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mediapipe_vision/mediapipe_vision.dart';
+import 'package:sign_talk/features/camera/camera_screen.dart';
 import 'package:sign_talk/features/camera/asl_recognition_pipeline.dart';
 
 TemporalLandmarkFrame _frame(
@@ -24,25 +26,43 @@ TemporalLandmarkFrame _frame(
   isMissing: missing,
 );
 
-HolisticLandmarkerResult _holisticResult({double shift = 0}) {
-  final face = List.generate(
-    478,
-    (index) => NormalizedLandmark(
-      x: (index % 20) / 20 + shift,
-      y: (index % 17) / 17,
-      z: 0,
-      visibility: 1,
-    ),
-  );
-  final pose = List.generate(
-    33,
-    (index) =>
-        NormalizedLandmark(x: index / 100, y: index / 100, z: 0, visibility: 1),
-  );
-  final poseWorld = List.generate(
-    33,
-    (index) => Landmark(x: index / 100, y: index / 100, z: 0, visibility: 1),
-  );
+HolisticLandmarkerResult _holisticResult({
+  double shift = 0,
+  bool faceVisible = true,
+  bool poseVisible = true,
+  bool leftHandVisible = true,
+  bool rightHandVisible = true,
+  bool blendshapesVisible = true,
+}) {
+  final face = faceVisible
+      ? List.generate(
+          478,
+          (index) => NormalizedLandmark(
+            x: (index % 20) / 20 + shift,
+            y: (index % 17) / 17,
+            z: 0,
+            visibility: 1,
+          ),
+        )
+      : <NormalizedLandmark>[];
+  final pose = poseVisible
+      ? List.generate(
+          33,
+          (index) => NormalizedLandmark(
+            x: index / 100,
+            y: index / 100,
+            z: 0,
+            visibility: 1,
+          ),
+        )
+      : <NormalizedLandmark>[];
+  final poseWorld = poseVisible
+      ? List.generate(
+          33,
+          (index) =>
+              Landmark(x: index / 100, y: index / 100, z: 0, visibility: 1),
+        )
+      : <Landmark>[];
   final hand = List.generate(
     21,
     (index) => NormalizedLandmark(
@@ -61,21 +81,29 @@ HolisticLandmarkerResult _holisticResult({double shift = 0}) {
       visibility: 1,
     ),
   );
+  final blendshapes = blendshapesVisible
+      ? [
+          const MediaPipeCategory(
+            index: 0,
+            score: 0.8,
+            categoryName: 'browDownLeft',
+          ),
+          const MediaPipeCategory(
+            index: 24,
+            score: 0.4,
+            categoryName: 'jawOpen',
+          ),
+        ]
+      : <MediaPipeCategory>[];
   return HolisticLandmarkerResult(
     faceLandmarks: face,
     poseLandmarks: pose,
     poseWorldLandmarks: poseWorld,
-    leftHandLandmarks: hand,
-    rightHandLandmarks: hand,
-    leftHandWorldLandmarks: handWorld,
-    rightHandWorldLandmarks: handWorld,
-    faceBlendshapes: [
-      const MediaPipeCategory(
-        index: 0,
-        score: 0.8,
-        categoryName: 'browDownLeft',
-      ),
-    ],
+    leftHandLandmarks: leftHandVisible ? hand : <NormalizedLandmark>[],
+    rightHandLandmarks: rightHandVisible ? hand : <NormalizedLandmark>[],
+    leftHandWorldLandmarks: leftHandVisible ? handWorld : <Landmark>[],
+    rightHandWorldLandmarks: rightHandVisible ? handWorld : <Landmark>[],
+    faceBlendshapes: blendshapes,
     imageWidth: 640,
     imageHeight: 480,
   );
@@ -83,6 +111,58 @@ HolisticLandmarkerResult _holisticResult({double shift = 0}) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('camera frame rotation follows lens and display orientation', () {
+    expect(
+      cameraFrameRotationDegrees(
+        sensorOrientation: 90,
+        deviceRotationDegrees: 0,
+        isFrontCamera: false,
+      ),
+      90,
+    );
+    expect(
+      cameraFrameRotationDegrees(
+        sensorOrientation: 90,
+        deviceRotationDegrees: 90,
+        isFrontCamera: false,
+      ),
+      0,
+    );
+    expect(
+      cameraFrameRotationDegrees(
+        sensorOrientation: 270,
+        deviceRotationDegrees: 90,
+        isFrontCamera: true,
+      ),
+      0,
+    );
+    expect(
+      cameraFrameRotationDegrees(
+        sensorOrientation: 270,
+        deviceRotationDegrees: 0,
+        isFrontCamera: true,
+      ),
+      270,
+    );
+  });
+
+  test('front-camera overlay mirrors normalized x only', () {
+    expect(
+      cameraPreviewPointForOverlay(
+        const Offset(.2, .35),
+        mirrorHorizontally: true,
+      ),
+      const Offset(.8, .35),
+    );
+    expect(
+      cameraPreviewPointForOverlay(
+        const Offset(.2, .35),
+        mirrorHorizontally: false,
+      ),
+      const Offset(.2, .35),
+    );
+  });
 
   test('converts BGRA camera pixels to RGBA with opaque alpha', () {
     final pixels = CameraFramePreprocessor.bgraToRgba(
@@ -179,6 +259,107 @@ void main() {
     expect(result['featureCount'], 2582);
     final json = const HolisticRawFrameExporter().encodeFrames([result]);
     expect(jsonDecode(json)['frames'], hasLength(1));
+  });
+
+  test('writes deterministic Dart-produced Python parity fixture', () async {
+    const extractor = HolisticFeatureExtractor();
+    const exporter = HolisticRawFrameExporter();
+    final cases = <({int timestamp, HolisticLandmarkerResult result})>[
+      (timestamp: 1000, result: _holisticResult()),
+      (
+        timestamp: 1033,
+        result: _holisticResult(
+          shift: 0.02,
+          leftHandVisible: false,
+          rightHandVisible: true,
+        ),
+      ),
+      (
+        timestamp: 1066,
+        result: _holisticResult(
+          shift: 0.04,
+          leftHandVisible: true,
+          rightHandVisible: false,
+        ),
+      ),
+      (
+        timestamp: 1099,
+        result: _holisticResult(
+          shift: 0.06,
+          faceVisible: false,
+          poseVisible: false,
+          leftHandVisible: false,
+          rightHandVisible: false,
+          blendshapesVisible: false,
+        ),
+      ),
+    ];
+    final frames = <Map<String, Object?>>[];
+    TemporalLandmarkFrame? previous;
+    for (final sample in cases) {
+      frames.add(
+        exporter.frameToJson(
+          sample.result,
+          timestampMs: sample.timestamp,
+          previous: previous,
+        ),
+      );
+      previous = extractor.extract(
+        sample.result,
+        timestampMs: sample.timestamp,
+        previous: previous,
+      );
+    }
+
+    final output = <String, Object?>{
+      'schemaVersion': HolisticRawFrameExporter.schemaVersion,
+      'featureSchema': HolisticFeatureExtractor.featureSchema,
+      'fixtureKind': 'synthetic_dart_extractor_regression',
+      'producer': 'HolisticRawFrameExporter.frameToJson',
+      'frames': frames,
+    };
+    final file = File('ml/data/parity/flutter_raw.json');
+    await file.parent.create(recursive: true);
+    await file.writeAsString(
+      const JsonEncoder.withIndent('  ').convert(output),
+    );
+
+    final decoded =
+        jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    expect(decoded['fixtureKind'], 'synthetic_dart_extractor_regression');
+    expect(decoded['frames'], hasLength(4));
+    for (final frame in decoded['frames'] as List) {
+      expect(frame['featureCount'], 2582);
+      expect((frame['flutterFeatures'] as List), hasLength(2582));
+    }
+  });
+
+  test('sanitizes non-finite landmark values in Dart extraction', () {
+    final result = HolisticLandmarkerResult(
+      faceLandmarks: [
+        NormalizedLandmark(
+          x: double.nan,
+          y: double.infinity,
+          z: double.negativeInfinity,
+          visibility: double.nan,
+        ),
+      ],
+      faceBlendshapes: const [],
+      poseLandmarks: const [],
+      poseWorldLandmarks: const [],
+      leftHandLandmarks: const [],
+      leftHandWorldLandmarks: const [],
+      rightHandLandmarks: const [],
+      rightHandWorldLandmarks: const [],
+      imageWidth: 640,
+      imageHeight: 480,
+    );
+    final frame = const HolisticFeatureExtractor().extract(
+      result,
+      timestampMs: 1,
+    );
+    expect(frame.features.take(4), [0, 0, 0, 0]);
+    expect(frame.features.every((value) => value.isFinite), isTrue);
   });
 
   test(

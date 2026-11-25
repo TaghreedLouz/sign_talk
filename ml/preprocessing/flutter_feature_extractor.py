@@ -7,7 +7,7 @@ BLENDSHAPES = """browDownLeft browDownRight browInnerUp browOuterUpLeft browOute
 def finite(value):
     try:
         value = float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return 0.0
     return value if math.isfinite(value) else 0.0
 
@@ -36,8 +36,13 @@ def extract(frame):
     pw=frame.get("poseWorldLandmarks",[]); left=frame.get("leftHandImageLandmarks",[])
     lw=frame.get("leftHandWorldLandmarks",[]); right=frame.get("rightHandImageLandmarks",[])
     rw=frame.get("rightHandWorldLandmarks",[])
-    cats={c.get("name"):finite(c.get("score")) for c in frame.get("faceBlendshapes",[]) if c.get("name") is not None}
-    flags=[bool(face),bool(pose),bool(left),bool(right),bool(frame.get("faceBlendshapes",[]))]
+    categories = frame.get("faceBlendshapes") or []
+    cats = {
+        c.get("name"): finite(c.get("score"))
+        for c in categories
+        if c.get("name") is not None
+    }
+    flags = [bool(face), bool(pose), bool(left), bool(right), bool(categories)]
     lcoords=[finite(p.get(k)) for p in left[:21] for k in ("x","y","z")]
     rcoords=[finite(p.get(k)) for p in right[:21] for k in ("x","y","z")]
     prev=frame.get("previous"); ds=[]

@@ -5,6 +5,7 @@ import 'package:camera/camera.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show DeviceOrientation;
 import 'package:mediapipe_vision/mediapipe_vision.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
@@ -20,7 +21,8 @@ class CameraScreen extends StatefulWidget {
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen> {
+class _CameraScreenState extends State<CameraScreen>
+    with WidgetsBindingObserver {
   CameraController? _camera;
   List<CameraDescription> _cameras = const [];
   int _cameraIndex = 0;
@@ -29,7 +31,7 @@ class _CameraScreenState extends State<CameraScreen> {
   StreamSubscription<HolisticLandmarkerResult>? _resultSubscription;
   final Stopwatch _clock = Stopwatch();
   AslRecognitionPipeline? _recognitionPipeline;
-  Future<void> _recognitionQueue = Future<void>.value();
+  ({HolisticLandmarkerResult result, int timestamp})? _pendingRecognition;
 
   bool _loading = true;
   final bool _processingEnabled = true;
@@ -48,6 +50,10 @@ class _CameraScreenState extends State<CameraScreen> {
   int _droppedFrames = 0;
   int _lastTimestamp = -1;
   bool _cameraSwitching = false;
+  bool _lifecyclePaused = false;
+  bool _recognitionBusy = false;
+  bool _cameraInitializing = false;
+  Future<void> _lifecycleWork = Future<void>.value();
   bool _showLandmarks = true;
   bool _transcriptCleared = false;
   bool _isVideoProcessing = false;
@@ -56,6 +62,11 @@ class _CameraScreenState extends State<CameraScreen> {
   int _videoFramesTotal = 0;
   String? _videoMessage;
   bool _captureParity = false;
+  int _lastCameraFrameSubmitMs = -1;
+  int _recognitionFramesReplaced = 0;
+  int? _lastPreprocessLatencyMs;
+  int? _lastResultLatencyMs;
+  static const _minimumCameraFrameIntervalMs = 50;
   final List<Map<String, Object?>> _parityFrames = [];
   List<Offset> _leftHand = const [];
   List<Offset> _rightHand = const [];
@@ -65,7 +76,26 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initialize();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final shouldPause = state != AppLifecycleState.resumed;
+    if (shouldPause == _lifecyclePaused) return;
+    _lifecyclePaused = shouldPause;
+    _lifecycleWork = _lifecycleWork
+        .then(
+          (_) => shouldPause
+              ? _pauseCameraForLifecycle()
+              : _resumeCameraAfterLifecycle(),
+        )
+        .catchError((Object error) {
+          if (mounted) {
+            setState(() => _status = 'Camera lifecycle error: $error');
+          }
+        });
   }
 
   Future<void> _initialize() async {
@@ -114,13 +144,15 @@ class _CameraScreenState extends State<CameraScreen> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = error.toString();
+        _error = _cameraInitializationMessage(error);
         _status = 'Could not initialize camera tracking.';
       });
     }
   }
 
   Future<void> _startCamera(CameraDescription description) async {
+    if (_cameraInitializing) return;
+    _cameraInitializing = true;
     final controller = CameraController(
       description,
       ResolutionPreset.medium,
@@ -129,13 +161,15 @@ class _CameraScreenState extends State<CameraScreen> {
     );
     try {
       await controller.initialize();
-      if (!mounted) {
+      if (!mounted || _lifecyclePaused) {
         await controller.dispose();
         return;
       }
       _camera = controller;
       await controller.startImageStream(_processFrame);
-      if (!mounted) return;
+      if (!mounted || _lifecyclePaused || !identical(_camera, controller)) {
+        return;
+      }
       setState(() {
         _loading = false;
         _cameraSwitching = false;
@@ -147,6 +181,8 @@ class _CameraScreenState extends State<CameraScreen> {
       if (identical(_camera, controller)) _camera = null;
       await controller.dispose();
       rethrow;
+    } finally {
+      _cameraInitializing = false;
     }
   }
 
@@ -157,6 +193,7 @@ class _CameraScreenState extends State<CameraScreen> {
       _status = 'Switching camera…';
     });
     _cameraIndex = (_cameraIndex + 1) % _cameras.length;
+    _resetTrackingForNewCamera();
     try {
       final current = _camera;
       _camera = null;
@@ -169,11 +206,102 @@ class _CameraScreenState extends State<CameraScreen> {
       if (mounted) {
         setState(() {
           _cameraSwitching = false;
-          _error = error.toString();
+          _error = _cameraInitializationMessage(error);
           _status = 'Could not switch camera.';
         });
       }
     }
+  }
+
+  Future<void> _pauseCameraForLifecycle() async {
+    _pendingRecognition = null;
+    if (_isVideoProcessing) _cancelVideo = true;
+    final camera = _camera;
+    _camera = null;
+    if (mounted) {
+      setState(() {
+        _cameraSwitching = true;
+        _status = 'Camera paused while the app is in the background.';
+      });
+    }
+    if (camera == null) return;
+    try {
+      if (camera.value.isStreamingImages) await camera.stopImageStream();
+    } catch (_) {}
+    await camera.dispose();
+  }
+
+  Future<void> _resumeCameraAfterLifecycle() async {
+    if (!mounted || _isVideoProcessing || _landmarker == null) return;
+    _resetTrackingForNewCamera();
+    if (mounted) {
+      setState(() {
+        _cameraSwitching = true;
+        _error = null;
+        _status = 'Resuming camera and landmark tracking…';
+      });
+    }
+    try {
+      final camera = _camera;
+      if (camera == null) {
+        if (_cameras.isEmpty) _cameras = await availableCameras();
+        if (_cameras.isEmpty) {
+          throw CameraException('NoCamera', 'No camera found.');
+        }
+        await _startCamera(
+          _cameras[_cameraIndex.clamp(0, _cameras.length - 1)],
+        );
+      } else if (camera.value.isInitialized &&
+          !camera.value.isStreamingImages) {
+        await camera.startImageStream(_processFrame);
+        if (mounted && !_lifecyclePaused) {
+          setState(() {
+            _cameraSwitching = false;
+            _status = 'Camera active. Keep your face, upper body and both hands visible.';
+          });
+        }
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _cameraSwitching = false;
+          _error = _cameraInitializationMessage(error);
+          _status = 'Could not resume camera tracking.';
+        });
+      }
+    }
+  }
+
+  void _resetTrackingForNewCamera() {
+    _pendingRecognition = null;
+    _recognitionPipeline?.buffer.clear();
+    _recognitionPipeline?.segmenter.reset();
+    _lastTimestamp = -1;
+    _lastCameraFrameSubmitMs = -1;
+    _leftHand = const [];
+    _rightHand = const [];
+    _pose = const [];
+    _face = const [];
+    _faceCount = 0;
+    _poseCount = 0;
+    _leftCount = 0;
+    _rightCount = 0;
+    _faceBlendshapeCount = 0;
+  }
+
+  String _cameraInitializationMessage(Object error) {
+    if (error is CameraException) {
+      return switch (error.code) {
+        'CameraAccessDenied' => 'Camera permission was denied. Allow camera access in Android app settings, then tap Retry camera.',
+        'CameraAccessDeniedWithoutPrompt' => 'Camera permission is blocked. Allow camera access in Android app settings, then tap Retry camera.',
+        'CameraAccessRestricted' =>
+          'Camera access is restricted by this device or its administrator.',
+        'NoCamera' => 'No camera is available on this device.',
+        _ =>
+          'Camera error (${error.code}): ${error.description ?? error.toString()}',
+      };
+    }
+    return error.toString();
   }
 
   Future<AslRecognitionPipeline> _loadRecognitionPipeline() async {
@@ -195,13 +323,24 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void _processFrame(CameraImage image) {
     final task = _landmarker;
-    if (task == null || !_processingEnabled || !mounted || _isVideoProcessing) {
+    if (task == null ||
+        !_processingEnabled ||
+        !mounted ||
+        _lifecyclePaused ||
+        _isVideoProcessing) {
       return;
     }
+    final now = _clock.elapsedMilliseconds;
+    if (_lastCameraFrameSubmitMs >= 0 &&
+        now - _lastCameraFrameSubmitMs < _minimumCameraFrameIntervalMs) {
+      return;
+    }
+    _lastCameraFrameSubmitMs = now;
+    final preprocessing = Stopwatch()..start();
     try {
       final rgba = CameraFramePreprocessor.fromCameraImage(image);
-      final now = _clock.elapsedMilliseconds;
       _lastTimestamp = now > _lastTimestamp ? now : _lastTimestamp + 1;
+      final camera = _camera;
       task.detectAsync(
         VisionImage.fromPixels(
           pixels: rgba,
@@ -210,9 +349,22 @@ class _CameraScreenState extends State<CameraScreen> {
           format: VisionPixelFormat.rgba,
         ),
         timestampMilliseconds: _lastTimestamp,
-        rotationDegrees: _camera?.description.sensorOrientation ?? 0,
+        rotationDegrees: camera == null
+            ? 0
+            : cameraFrameRotationDegrees(
+                sensorOrientation: camera.description.sensorOrientation,
+                deviceRotationDegrees: deviceOrientationDegrees(
+                  camera.value.deviceOrientation,
+                ),
+                isFrontCamera:
+                    camera.description.lensDirection ==
+                    CameraLensDirection.front,
+              ),
       );
+      preprocessing.stop();
+      _lastPreprocessLatencyMs = preprocessing.elapsedMilliseconds;
     } catch (error) {
+      preprocessing.stop();
       if (mounted) {
         setState(() => _status = 'Could not process camera frame: $error');
       }
@@ -221,6 +373,11 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void _onLandmarks(HolisticLandmarkerResult result) {
     if (!mounted) return;
+    final resultTimestamp = result.timestampMilliseconds;
+    if (resultTimestamp != null) {
+      final latencyMs = _clock.elapsedMilliseconds - resultTimestamp;
+      _lastResultLatencyMs = latencyMs >= 0 ? latencyMs : null;
+    }
     if (kDebugMode && _captureParity) {
       final pipeline = _recognitionPipeline;
       if (pipeline != null) {
@@ -275,13 +432,49 @@ class _CameraScreenState extends State<CameraScreen> {
     HolisticLandmarkerResult result,
     int timestamp,
   ) {
-    _recognitionQueue = _recognitionQueue
-        .then((_) => _processRecognitionResult(result, timestamp))
-        .catchError((Object error) {
-          if (mounted) {
-            setState(() => _status = 'Recognition pipeline error: $error');
-          }
-        });
+    if (_lifecyclePaused || _isVideoProcessing) return;
+    if (_recognitionBusy) {
+      if (_pendingRecognition != null) _recognitionFramesReplaced++;
+      _pendingRecognition = (result: result, timestamp: timestamp);
+      return;
+    }
+    unawaited(_drainRecognitionResults((result: result, timestamp: timestamp)));
+  }
+
+  Future<void> _drainRecognitionResults(
+    ({HolisticLandmarkerResult result, int timestamp}) first,
+  ) async {
+    if (_recognitionBusy) {
+      _pendingRecognition = first;
+      return;
+    }
+    _recognitionBusy = true;
+    var current = first;
+    try {
+      while (mounted && !_lifecyclePaused && !_isVideoProcessing) {
+        final ageMs = _clock.elapsedMilliseconds - current.timestamp;
+        if (ageMs <= 500) {
+          await _processRecognitionResult(current.result, current.timestamp);
+        } else {
+          _recognitionFramesReplaced++;
+        }
+        final next = _pendingRecognition;
+        _pendingRecognition = null;
+        if (next == null) break;
+        current = next;
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _status = 'Recognition pipeline error: $error');
+      }
+    } finally {
+      _recognitionBusy = false;
+      final next = _pendingRecognition;
+      if (next != null && mounted && !_lifecyclePaused && !_isVideoProcessing) {
+        _pendingRecognition = null;
+        unawaited(_drainRecognitionResults(next));
+      }
+    }
   }
 
   Future<void> _saveParityCapture() async {
@@ -364,12 +557,15 @@ class _CameraScreenState extends State<CameraScreen> {
       }
 
       final liveCamera = _camera;
+      _pendingRecognition = null;
+      _recognitionPipeline?.buffer.clear();
+      _recognitionPipeline?.segmenter.reset();
+      _isVideoProcessing = true;
       if (liveCamera?.value.isStreamingImages == true) {
         await liveCamera!.stopImageStream();
       }
       if (!mounted) return;
       setState(() {
-        _isVideoProcessing = true;
         _cancelVideo = false;
         _videoFramesProcessed = 0;
         _videoFramesTotal = VideoFrameProcessor.timestampsForDuration(
@@ -442,22 +638,32 @@ class _CameraScreenState extends State<CameraScreen> {
       final videoLandmarker = _videoLandmarker;
       _videoLandmarker = null;
       if (videoLandmarker != null) await videoLandmarker.dispose();
-      final liveCamera = _camera;
-      if (mounted &&
-          liveCamera != null &&
-          liveCamera.value.isInitialized &&
-          !liveCamera.value.isStreamingImages) {
-        try {
-          await liveCamera.startImageStream(_processFrame);
-        } catch (error) {
-          if (mounted) setState(() => _status = 'Camera resume failed: $error');
-        }
-      }
       if (mounted) {
         setState(() {
           _isVideoProcessing = false;
           _cancelVideo = false;
+          _cameraSwitching = _camera == null && !_lifecyclePaused;
         });
+      }
+      _resetTrackingForNewCamera();
+      if (mounted && !_lifecyclePaused) {
+        try {
+          final liveCamera = _camera;
+          if (liveCamera == null) {
+            await _startCamera(_cameras[_cameraIndex]);
+          } else if (liveCamera.value.isInitialized &&
+              !liveCamera.value.isStreamingImages) {
+            await liveCamera.startImageStream(_processFrame);
+          }
+        } catch (error) {
+          if (mounted) {
+            setState(() {
+              _cameraSwitching = false;
+              _error = _cameraInitializationMessage(error);
+              _status = 'Camera resume failed.';
+            });
+          }
+        }
       }
     }
   }
@@ -519,6 +725,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> _disposeResources() async {
     _cancelVideo = true;
+    _pendingRecognition = null;
     final camera = _camera;
     _camera = null;
     if (camera != null) {
@@ -527,17 +734,17 @@ class _CameraScreenState extends State<CameraScreen> {
       } catch (_) {}
       await camera.dispose();
     }
+    await _resultSubscription?.cancel();
+    _resultSubscription = null;
     final task = _landmarker;
     _landmarker = null;
-    if (task != null) {
-      await task.dispose();
-      await _resultSubscription?.cancel();
-      _resultSubscription = null;
-    }
+    if (task != null) await task.dispose();
   }
 
   @override
   void dispose() {
+    _lifecyclePaused = true;
+    WidgetsBinding.instance.removeObserver(this);
     unawaited(_disposeResources());
     super.dispose();
   }
@@ -546,6 +753,8 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     final camera = _camera;
     final portrait = MediaQuery.orientationOf(context) == Orientation.portrait;
+    final frontCamera =
+        camera?.description.lensDirection == CameraLensDirection.front;
     final previewAspect = camera == null
         ? 1.0
         : portrait
@@ -599,6 +808,7 @@ class _CameraScreenState extends State<CameraScreen> {
                                 rightHand: _rightHand,
                                 pose: _pose,
                                 face: _face,
+                                mirrorHorizontally: frontCamera,
                               ),
                             ),
                           ),
@@ -616,7 +826,8 @@ class _CameraScreenState extends State<CameraScreen> {
                           top: 12,
                           right: 12,
                           child: _StatusPill(
-                            label: '$_frames frames · $_droppedFrames dropped',
+                            label:
+                                '$_frames · $_droppedFrames drop · ${_lastResultLatencyMs ?? '—'} ms',
                             color: Colors.black.withValues(alpha: .65),
                           ),
                         ),
@@ -624,6 +835,14 @@ class _CameraScreenState extends State<CameraScreen> {
                           const Center(child: CircularProgressIndicator()),
                       ],
                     ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Text(
+                    'Frame conversion/submission: ${_lastPreprocessLatencyMs ?? '—'} ms · '
+                    'recognition frames replaced: $_recognitionFramesReplaced',
+                    style: const TextStyle(fontSize: 11),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -788,6 +1007,35 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 }
 
+int deviceOrientationDegrees(DeviceOrientation orientation) =>
+    switch (orientation) {
+      DeviceOrientation.portraitUp => 0,
+      DeviceOrientation.landscapeLeft => 90,
+      DeviceOrientation.portraitDown => 180,
+      DeviceOrientation.landscapeRight => 270,
+    };
+
+/// Rotation from the camera sensor buffer into the current display orientation.
+/// Android front-facing sensors rotate in the opposite direction to rear ones.
+int cameraFrameRotationDegrees({
+  required int sensorOrientation,
+  required int deviceRotationDegrees,
+  required bool isFrontCamera,
+}) {
+  final deviceRotation = deviceRotationDegrees % 360;
+  final rotation =
+      sensorOrientation + (isFrontCamera ? deviceRotation : -deviceRotation);
+  return ((rotation % 360) + 360) % 360;
+}
+
+Offset cameraPreviewPointForOverlay(
+  Offset normalizedPoint, {
+  required bool mirrorHorizontally,
+}) => Offset(
+  mirrorHorizontally ? 1 - normalizedPoint.dx : normalizedPoint.dx,
+  normalizedPoint.dy,
+);
+
 class _TranscriptPanel extends StatelessWidget {
   const _TranscriptPanel({
     required this.transcript,
@@ -897,11 +1145,13 @@ class _LandmarkPainter extends CustomPainter {
     required this.rightHand,
     required this.pose,
     required this.face,
+    required this.mirrorHorizontally,
   });
   final List<Offset> leftHand;
   final List<Offset> rightHand;
   final List<Offset> pose;
   final List<Offset> face;
+  final bool mirrorHorizontally;
   static const List<List<int>> _poseConnections = [
     [11, 12],
     [11, 13],
@@ -1008,7 +1258,11 @@ class _LandmarkPainter extends CustomPainter {
         point.dy > 1) {
       return null;
     }
-    return Offset(point.dx * size.width, point.dy * size.height);
+    final transformed = cameraPreviewPointForOverlay(
+      point,
+      mirrorHorizontally: mirrorHorizontally,
+    );
+    return Offset(transformed.dx * size.width, transformed.dy * size.height);
   }
 
   @override
@@ -1016,5 +1270,6 @@ class _LandmarkPainter extends CustomPainter {
       old.leftHand != leftHand ||
       old.rightHand != rightHand ||
       old.pose != pose ||
-      old.face != face;
+      old.face != face ||
+      old.mirrorHorizontally != mirrorHorizontally;
 }
