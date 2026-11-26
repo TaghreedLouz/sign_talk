@@ -40,3 +40,6 @@ __pycache__/
 
 # Local diagnostic screenshots
 .phase3a3-phone-screen*.png
+
+# Temporary Codex app data
+ml/.codex_appdata_temp/
